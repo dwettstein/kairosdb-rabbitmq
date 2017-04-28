@@ -172,6 +172,42 @@ public class RabbitmqService
     @Named("kairosdb.plugin.rabbitmq.csv.seperator")
     private String configurationCSVSeperator = ",";
 
+    /**
+     * queueDurable - true if we are declaring a durable queue (the queue will survive a server restart)
+     */
+    @Inject
+    @Named("kairosdb.plugin.rabbitmq.bindingsfile.queue.properties.queueDurable")
+    private boolean configurationDefaultQueueDurable = true;
+    
+    /**
+     * queueExclusive - true if we are declaring an exclusive queue (restricted to this connection)
+     */
+    @Inject
+    @Named("kairosdb.plugin.rabbitmq.bindingsfile.queue.properties.queueExclusive")
+    private boolean configurationDefaultQueueExclusive = false;
+    
+    /**
+     * queueAutoDelete - true if we are declaring an auto-delete queue (server will delete it when no longer in use)
+     */
+    @Inject
+    @Named("kairosdb.plugin.rabbitmq.bindingsfile.queue.properties.queueAutoDelete")
+    private boolean configurationDefaultQueueAutoDelete = false;
+
+    /**
+     * RabbitMQ auto-update bindings - true if the plugin should automatically update the queues and bindings when 
+     * the bindingsfile changed (without restarting the KairosDB service)
+     */
+    @Inject
+    @Named("kairosdb.plugin.rabbitmq.bindingsfile.autoupdate")
+    private boolean configurationAutoupdate = false;
+    		
+	/**
+     * Timeout between checking for bindingsfile changes in seconds.
+     */
+    @Inject
+    @Named("kairosdb.plugin.rabbitmq.bindingsfile.autoupdate.timeout")
+    private long configurationAutoupdateTimeout = 300L;
+    
     /*
      * (non-Javadoc)
      * 
@@ -202,7 +238,9 @@ public class RabbitmqService
             RabbitmqConsumer consumer = new RabbitmqConsumer(kairosDatabase,
                     rabbitmqConnectionFactory, bindingsFile, configurationJSONFieldValue,
                     configurationJSONTimeStamp, configurationJSONTags, configurationCSVSeperator,
-                    configurationDefaultContentType);
+                    configurationDefaultContentType, configurationDefaultQueueDurable, 
+                    configurationDefaultQueueExclusive, configurationDefaultQueueAutoDelete,
+                    configurationAutoupdate, configurationAutoupdateTimeout);
 
             // Start consumer thread
             consumerThread = new Thread(consumer);

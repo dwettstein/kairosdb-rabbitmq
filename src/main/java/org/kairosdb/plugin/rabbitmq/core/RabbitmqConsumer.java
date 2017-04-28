@@ -15,7 +15,6 @@ import java.io.File;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.util.Map;
-
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.json.JSONArray;
@@ -124,6 +123,32 @@ public class RabbitmqConsumer implements Runnable {
 	private QueueingConsumer consumer = null;
 
 	/**
+	 * queueDurable - true if we are declaring a durable queue (the queue will survive a server restart)
+	 */
+	private boolean defaultQueueDurable = true;
+
+	/**
+	 * queueExclusive - true if we are declaring an exclusive queue (restricted to this connection)
+	 */
+	private boolean defaultQueueExclusive = false;
+
+	/**
+	 * queueAutoDelete - true if we are declaring an auto-delete queue (server will delete it when no longer in use)
+	 */
+	private boolean defaultQueueAutoDelete = false;
+
+	/**
+	 * RabbitMQ auto-update bindings - true if the plugin should automatically update the queues and bindings when 
+	 * the bindingsfile changed (without restarting the KairosDB service)
+	 */
+	private boolean autoupdate = false;
+
+	/**
+	 * Timeout between checking for bindingsfile changes in seconds.
+	 */
+	private long autoupdateTimeout = 300L;
+
+	/**
 	 * Instantiates a new RabbitMQ message consumer.
 	 * 
 	 * @param datastore
@@ -142,11 +167,18 @@ public class RabbitmqConsumer implements Runnable {
 	 *            the seperator
 	 * @param defaultContentType
 	 *            the default content type
+	 * @param defaultQueueDurable
+	 * @param defaultQueueExclusive
+	 * @param defaultQueueAutoDelete
+	 * @param autoupdate
+	 * @param autoupdateTimeout
 	 */
 	public RabbitmqConsumer(KairosDatastore datastore,
 			ConnectionFactory factory, String bindingsfile, String fieldValue,
 			String fieldTimestamp, String fieldTags, String seperator,
-			String defaultContentType) {
+			String defaultContentType, boolean defaultQueueDurable, 
+			boolean defaultQueueExclusive, boolean defaultQueueAutoDelete, 
+			boolean autoupdate, long autoupdateTimeout) {
 		this.datastore = datastore;
 		this.factory = factory;
 		this.bindingsfile = bindingsfile;
@@ -155,6 +187,14 @@ public class RabbitmqConsumer implements Runnable {
 		this.fieldTags = fieldTags;
 		this.seperator = seperator;
 		this.defaultContentType = defaultContentType;
+		this.defaultQueueDurable = defaultQueueDurable;
+		this.defaultQueueExclusive = defaultQueueExclusive;
+		this.defaultQueueAutoDelete = defaultQueueAutoDelete;
+		this.autoupdate = autoupdate;
+		this.autoupdateTimeout = autoupdateTimeout;
+		
+		LOGGER.info("[KRMQ] Autoupdate set to " + autoupdate + ", "
+				+ "autoupdateTimeout: " + autoupdateTimeout);
 	}
 
 	/*
@@ -170,6 +210,8 @@ public class RabbitmqConsumer implements Runnable {
 			// Configure consumer
 			readConfigurations();
 
+			long lastConfigTimestamp = System.currentTimeMillis() / 1000L;
+			
 			// Reads message from queue for ever (or until be killed)
 			// Continue to run even even if catch exceptions in the way
 			// Run only if configured correctly
@@ -195,19 +237,40 @@ public class RabbitmqConsumer implements Runnable {
 					channel.basicAck(delivery.getEnvelope().getDeliveryTag(),
 							false);
 
-				} catch (InterruptedException e) {
-					throw new InterruptedException();
-				} catch (IOException | ShutdownSignalException
-						| ConsumerCancelledException e) {
+				} catch (InterruptedException | IOException | ShutdownSignalException e) {
 					LOGGER.error("[KRMQ] An error occurred: ", e);
-					throw new InterruptedException();
+					throw e;
+				} catch (ConsumerCancelledException e) {
+					LOGGER.warn("[KRMQ] A ConsumerCancelledException occurred, "
+							+ "probably the queue was deleted: ", e);
+					LOGGER.info("[KRMQ] Reconfigure consumer.");
+					readConfigurations();
 				}
 
 				LOGGER.debug("[KRMQ] <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
 
+				if (autoupdate) {
+					// Check for configuration file changes.
+					long currentConfigTimestamp = System.currentTimeMillis() / 1000L;
+					if (currentConfigTimestamp - lastConfigTimestamp > autoupdateTimeout) {
+						LOGGER.info("[KRMQ] Autoupdate set to true, checking for "
+								+ "bindingsfile changes.");
+						try {
+							lastConfigTimestamp = currentConfigTimestamp;
+							if (hasConfigurationChanges()) {
+								LOGGER.info("[KRMQ] The bindingsfile changed, "
+										+ "update the bindings.");
+								configureBindings();
+							}
+						} catch (Exception e) {
+							LOGGER.error("[KRMQ] An error occurred while checking "
+									+ "or updating bindingsfile changes: ", e);
+						}
+					}
+				}
 			}
 
-		} catch (InterruptedException e) {
+		} catch (Exception e) {
 
 			isAlive = false;
 			LOGGER.info("[KRMQ] Execution interrupted."
@@ -318,6 +381,8 @@ public class RabbitmqConsumer implements Runnable {
 	private void readConfigurations() throws InterruptedException {
 
 		try {
+			
+			LOGGER.info("[KRMQ] Connecting to RabbitMQ broker.");
 
 			// Channel connection with broker
 			connection = factory.newConnection();
@@ -338,7 +403,40 @@ public class RabbitmqConsumer implements Runnable {
 		}
 
 	}
+	
+	/**
+	 * Check if the configuration file has changed.
+	 * 
+	 * @throws Exception
+	 *             the exception
+	 */
+	private boolean hasConfigurationChanges() throws Exception {
+		boolean hasChanged = false;
+		
+		String path = "conf/" + bindingsfile;
+		
+		try {
+			// Read bindings configuration
+			LOGGER.info("[KRMQ] Reading binding configuration from '" + path
+					+ "'.");
 
+			JSONObject config = new JSONObject(FileUtils.readFileToString(new File(
+					path)));
+			
+			if (bindingconf.toString().equals(config.toString())) {
+				hasChanged = false;
+			} else {
+				hasChanged = true;
+			}
+			
+		} catch (JSONException e) {
+			throw new JSONException("Binding configuration '" + path
+					+ "' is not a valid JSON file.");
+		}
+		
+		return hasChanged;
+	}
+	
 	/**
 	 * Configure bindings between Queues and Exchanges.
 	 * 
@@ -350,8 +448,6 @@ public class RabbitmqConsumer implements Runnable {
 		String path = "conf/" + bindingsfile;
 
 		try {
-
-			LOGGER.info("[KRMQ] Connecting to RabbitMQ broker.");
 
 			// Read bindings configuration
 			LOGGER.info("[KRMQ] Reading binding configuration from '" + path
@@ -402,21 +498,31 @@ public class RabbitmqConsumer implements Runnable {
 										+ queuename
 										+ "' with bindingkey '"
 										+ bindingkey + "'.");
-
-								// Read queue properties
-								Boolean durable = Boolean
-										.parseBoolean(getQueueProperty(
-												bindingconf, queuename,
-												"queueDurable"));
-								Boolean exclusive = Boolean
-										.parseBoolean(getQueueProperty(
-												bindingconf, queuename,
-												"queueExclusive"));
-								Boolean autodelete = Boolean
-										.parseBoolean(getQueueProperty(
-												bindingconf, queuename,
-												"queueAutoDelete"));
-
+								
+								Boolean durable;
+								Boolean exclusive;
+								Boolean autodelete;
+								try {
+									// Read queue properties
+									durable = Boolean
+											.parseBoolean(getQueueProperty(
+													bindingconf, queuename,
+													"queueDurable"));
+									exclusive = Boolean
+											.parseBoolean(getQueueProperty(
+													bindingconf, queuename,
+													"queueExclusive"));
+									autodelete = Boolean
+											.parseBoolean(getQueueProperty(
+													bindingconf, queuename,
+													"queueAutoDelete"));
+								} catch (InvalidBindingConfiguration e) {
+									LOGGER.debug("Invalid binding configuration, use default values. Exception: ", e);
+									durable = defaultQueueDurable;
+									exclusive = defaultQueueExclusive;
+									autodelete = defaultQueueAutoDelete;
+								}
+								
 								// Bind queue to exchange
 								bindQueueToExchange(exchange, exchangeType,
 										exchangeDurable, exchangeAutoDelete,
@@ -551,7 +657,7 @@ public class RabbitmqConsumer implements Runnable {
 				} else {
 					throw new InvalidBindingConfiguration(
 							"Queue configuration '" + i
-									+ "' is missing 'queue' property.");
+									+ "' is missing 'queueName' property.");
 				}
 
 			}
