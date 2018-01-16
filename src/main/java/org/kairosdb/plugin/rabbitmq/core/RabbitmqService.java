@@ -194,6 +194,7 @@ public class RabbitmqService
             rabbitmqConnectionFactory.setRequestedChannelMax(rabbitmqChannelMax);
             rabbitmqConnectionFactory.setRequestedFrameMax(rabbitmqFrameMax);
             rabbitmqConnectionFactory.setRequestedHeartbeat(rabbitmqHearbeat);
+            rabbitmqConnectionFactory.setAutomaticRecoveryEnabled(true);
 
             // Get KairosDatastore implementation
             KairosDatastore kairosDatabase = googleInjector.getInstance(KairosDatastore.class);
