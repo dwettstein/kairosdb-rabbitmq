@@ -246,7 +246,6 @@ public class RabbitmqConsumer implements Runnable {
 			String metricName = routingKey;
 
 			Validator.validateNotNullOrEmpty("metricName", metricName);
-			Validator.validateCharacterSet("metricName", metricName);
 
 			// Gets consumer implementation
 			ConsumerFactory factory = new ConsumerFactory(fieldValue,
